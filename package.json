@@ -1,0 +1,47 @@
+{
+  "name": "pi-codex",
+  "version": "0.1.0",
+  "description": "Use Codex from pi-coding-agent to review code or delegate tasks.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "codex",
+    "openai",
+    "code-review",
+    "delegation"
+  ],
+  "author": "diogo",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quantmind-br/pi-codex.git"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extension/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/codex:review.md",
+      "./prompts/codex:adversarial-review.md",
+      "./prompts/codex:rescue.md"
+    ]
+  },
+  "scripts": {
+    "test": "node --test tests/",
+    "typecheck": "tsc --noEmit"
+  }
+}
