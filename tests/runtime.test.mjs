@@ -1001,8 +1001,10 @@ test("status shows phases, hints, and the latest finished job", () => {
     "utf8"
   );
 
+  const { CODEX_COMPANION_SESSION_ID: _sid, ...env } = process.env;
   const result = run("node", [SCRIPT, "status"], {
-    cwd: workspace
+    cwd: workspace,
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -1145,8 +1147,10 @@ test("status preserves adversarial review kind labels", () => {
     "utf8"
   );
 
+  const { CODEX_COMPANION_SESSION_ID: _sid, ...env } = process.env;
   const result = run("node", [SCRIPT, "status"], {
-    cwd: workspace
+    cwd: workspace,
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -1268,8 +1272,10 @@ test("result returns the stored output for the latest finished job by default", 
     "utf8"
   );
 
+  const { CODEX_COMPANION_SESSION_ID: _sid, ...env } = process.env;
   const result = run("node", [SCRIPT, "result"], {
-    cwd: workspace
+    cwd: workspace,
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
