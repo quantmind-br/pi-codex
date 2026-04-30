@@ -9,8 +9,21 @@ const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
+const STATE_BACKUP_FILE_NAME = "state.json.bak";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+
+export class CorruptStateError extends Error {
+  constructor(message, { cause, statePath } = {}) {
+    super(message);
+    this.name = "CorruptStateError";
+    this.code = "CODEX_CORRUPT_STATE";
+    this.statePath = statePath ?? null;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -47,6 +60,10 @@ export function resolveStateFile(cwd) {
   return path.join(resolveStateDir(cwd), STATE_FILE_NAME);
 }
 
+export function resolveStateBackupFile(cwd) {
+  return path.join(resolveStateDir(cwd), STATE_BACKUP_FILE_NAME);
+}
+
 export function resolveJobsDir(cwd) {
   return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
 }
@@ -55,26 +72,59 @@ export function ensureStateDir(cwd) {
   fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
 }
 
+function normalizeParsedState(parsed) {
+  return {
+    ...defaultState(),
+    ...parsed,
+    config: {
+      ...defaultState().config,
+      ...(parsed.config ?? {})
+    },
+    jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
+  };
+}
+
+function tryReadParsed(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, missing: true };
+  }
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    if (!raw.trim()) {
+      return { ok: false, missing: false, error: new Error("state file is empty") };
+    }
+    return { ok: true, value: normalizeParsedState(JSON.parse(raw)) };
+  } catch (error) {
+    return { ok: false, missing: false, error };
+  }
+}
+
 export function loadState(cwd) {
   const stateFile = resolveStateFile(cwd);
   if (!fs.existsSync(stateFile)) {
     return defaultState();
   }
 
-  try {
-    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    return {
-      ...defaultState(),
-      ...parsed,
-      config: {
-        ...defaultState().config,
-        ...(parsed.config ?? {})
-      },
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
-    };
-  } catch {
-    return defaultState();
+  const primary = tryReadParsed(stateFile);
+  if (primary.ok) {
+    return primary.value;
   }
+
+  // Primary state is unreadable. Try the rotated backup the previous
+  // saveState wrote before its atomic rename. Falling silently back to
+  // defaults would reset stopReviewGate to false and drop active jobs from
+  // /codex:status and /codex:cancel — a fail-open recovery path. Prefer the
+  // backup, otherwise raise loud so callers can refuse to proceed.
+  const backupFile = resolveStateBackupFile(cwd);
+  const backup = tryReadParsed(backupFile);
+  if (backup.ok) {
+    return backup.value;
+  }
+
+  throw new CorruptStateError(
+    `Codex companion state file is unreadable and no usable backup is available: ${stateFile}`,
+    { cause: primary.error, statePath: stateFile }
+  );
 }
 
 function pruneJobs(jobs) {
@@ -111,7 +161,36 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  const stateFile = resolveStateFile(cwd);
+  const backupFile = resolveStateBackupFile(cwd);
+  const tempFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
+  const payload = `${JSON.stringify(nextState, null, 2)}\n`;
+
+  // Write to a sibling temp file, then atomically rename into place so a
+  // crash mid-write cannot leave a truncated state.json. Rotate the
+  // previous good copy to state.json.bak first so loadState has a fallback
+  // if the rename ever happens to coincide with another reader observing a
+  // half-written file on a non-POSIX filesystem.
+  fs.writeFileSync(tempFile, payload, "utf8");
+  try {
+    if (fs.existsSync(stateFile)) {
+      try {
+        fs.copyFileSync(stateFile, backupFile);
+      } catch {
+        // Backup is best-effort; do not block a successful state write
+        // because a previous file could not be copied.
+      }
+    }
+    fs.renameSync(tempFile, stateFile);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempFile);
+    } catch {
+      // Temp file may already be gone; ignore.
+    }
+    throw error;
+  }
+
   return nextState;
 }
 

@@ -102,6 +102,7 @@ export function terminateProcessTree(pid, options = {}) {
     return { attempted: true, delivered: true, method: "process-group" };
   } catch (error) {
     if (error?.code !== "ESRCH") {
+      // Some other failure (EPERM, etc.). Try direct PID before giving up.
       try {
         killImpl(pid, "SIGTERM");
         return { attempted: true, delivered: true, method: "process" };
@@ -113,7 +114,20 @@ export function terminateProcessTree(pid, options = {}) {
       }
     }
 
-    return { attempted: true, delivered: false, method: "process-group" };
+    // PGID kill returned ESRCH — the process group does not exist. The
+    // recorded pid may be a child rather than a process-group leader (e.g.
+    // a `nohup ... &` background job inherits its caller's group). Fall
+    // back to a direct PID kill so write-capable tasks cannot survive a
+    // cancellation that the caller believed succeeded.
+    try {
+      killImpl(pid, "SIGTERM");
+      return { attempted: true, delivered: true, method: "process" };
+    } catch (innerError) {
+      if (innerError?.code === "ESRCH") {
+        return { attempted: true, delivered: false, method: "process" };
+      }
+      throw innerError;
+    }
   }
 }
 

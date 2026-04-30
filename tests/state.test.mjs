@@ -5,7 +5,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../scripts/lib/state.mjs";
+import {
+  CorruptStateError,
+  loadState,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateBackupFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState
+} from "../scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -102,4 +111,55 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+test("loadState throws CorruptStateError instead of resetting jobs and gate when state.json is unreadable", () => {
+  const workspace = makeTempDir();
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: true },
+    jobs: [{ id: "job-1", status: "running", updatedAt: "2026-01-01T00:00:00.000Z" }]
+  });
+  const stateFile = resolveStateFile(workspace);
+  fs.writeFileSync(stateFile, "{ this is not json", "utf8");
+  // Wipe the rotated backup so loadState has no fallback.
+  fs.rmSync(resolveStateBackupFile(workspace), { force: true });
+
+  assert.throws(() => loadState(workspace), (error) => {
+    return error instanceof CorruptStateError && error.code === "CODEX_CORRUPT_STATE";
+  });
+});
+
+test("loadState falls back to state.json.bak when state.json is corrupt and the backup is intact", () => {
+  const workspace = makeTempDir();
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: true },
+    jobs: [{ id: "job-1", status: "running", updatedAt: "2026-01-01T00:00:00.000Z" }]
+  });
+  // Mutate state so saveState rotates the previous good copy into state.json.bak.
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: true },
+    jobs: [{ id: "job-2", status: "completed", updatedAt: "2026-01-02T00:00:00.000Z" }]
+  });
+
+  fs.writeFileSync(resolveStateFile(workspace), "<<truncated>>", "utf8");
+
+  const recovered = loadState(workspace);
+  assert.equal(recovered.config.stopReviewGate, true);
+  assert.equal(recovered.jobs.length, 1);
+  assert.equal(recovered.jobs[0].id, "job-1");
+});
+
+test("saveState writes via temp+rename so a crashed write cannot leave a partial state.json", () => {
+  const workspace = makeTempDir();
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: true },
+    jobs: []
+  });
+  const stateDir = resolveStateDir(workspace);
+  const leftover = fs.readdirSync(stateDir).filter((entry) => entry.endsWith(".tmp"));
+  assert.deepEqual(leftover, [], "no leftover temp files after a successful save");
 });

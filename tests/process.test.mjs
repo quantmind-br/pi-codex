@@ -53,3 +53,43 @@ test("terminateProcessTree treats missing Windows processes as already stopped",
   assert.equal(outcome.result.status, 128);
   assert.match(outcome.result.stdout, /not found/i);
 });
+
+test("terminateProcessTree on POSIX falls back to direct PID when PGID kill returns ESRCH", () => {
+  const calls = [];
+  const outcome = terminateProcessTree(2345, {
+    platform: "linux",
+    killImpl(target, signal) {
+      calls.push({ target, signal });
+      if (target === -2345) {
+        const err = new Error("no such process");
+        err.code = "ESRCH";
+        throw err;
+      }
+      // Direct PID kill succeeds.
+      return undefined;
+    }
+  });
+
+  assert.deepEqual(calls, [
+    { target: -2345, signal: "SIGTERM" },
+    { target: 2345, signal: "SIGTERM" }
+  ]);
+  assert.equal(outcome.attempted, true);
+  assert.equal(outcome.delivered, true);
+  assert.equal(outcome.method, "process");
+});
+
+test("terminateProcessTree on POSIX reports not delivered only when both PGID and direct kill ESRCH", () => {
+  const outcome = terminateProcessTree(3456, {
+    platform: "linux",
+    killImpl() {
+      const err = new Error("no such process");
+      err.code = "ESRCH";
+      throw err;
+    }
+  });
+
+  assert.equal(outcome.attempted, true);
+  assert.equal(outcome.delivered, false);
+  assert.equal(outcome.method, "process");
+});
